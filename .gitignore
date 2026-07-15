@@ -1,0 +1,15 @@
+# docs excluded per request
+*.md
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# data + training artifacts (large, regenerated)
+data/
+datasets/
+runs/
+*.pt
+*.onnx

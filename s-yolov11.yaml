@@ -1,0 +1,69 @@
+# S-YOLOv11 (skala "s", channel absolut, multiplier unit).
+# Neck = EMAFPN 4 level, node 11-42 dipetakan PERSIS ke Fig. 1 paper
+# (tipe tiap node — Conv/EUCB/WFF/C3k2 — diverifikasi cocok dengan gambar).
+# Fan-in tiap WFF diturunkan dari persamaan MAFPN P_td/P_out (paper 2.2) + kendala resolusi.
+# Head = Detect_ESDCDH (cocok Fig. 5/6).
+nc: 10 # VisDrone2019
+scales:
+  s: [1.00, 1.00, 1024]
+
+backbone:
+  - [-1, 1, Conv, [32, 3, 2]] # 0  P1/2
+  - [-1, 1, Conv, [64, 3, 2]] # 1  P2/4
+  - [-1, 1, C3k2, [128, False, 0.25]] # 2  -> P2 (128)
+  - [-1, 1, Conv, [128, 3, 2]] # 3  P3/8
+  - [-1, 1, C3k2, [256, False, 0.25]] # 4  -> P3 (256)
+  - [-1, 1, Conv, [256, 3, 2]] # 5  P4/16
+  - [-1, 1, C3k2, [256, True]] # 6  -> P4 (256)
+  - [-1, 1, Conv, [512, 3, 2]] # 7  P5/32
+  - [-1, 1, C3k2, [512, True]] # 8
+  - [-1, 1, SPPF, [512, 5]] # 9
+  - [-1, 1, C2PSA, [512]] # 10 -> P5 (512)
+
+# Channel neck: P2=64, P3=128, P4=128, P5=256 (lean, mengejar ~12.1M/36.1 GFLOPs paper).
+head:
+  # ---- lateral align (Conv K3 S1) ----
+  - [4, 1, Conv, [128, 3, 1]] # 11 P3 lat
+  - [6, 1, Conv, [128, 3, 1]] # 12 P4 lat
+  - [10, 1, Conv, [256, 3, 1]] # 13 P5 lat
+
+  # ---- top-down (superficial) : P5_td,P4_td,P3_td,P2_td ----
+  - [12, 1, Conv, [256, 3, 2]] # 14 P4->P5 down
+  - [[13, 14], 1, WFF, [2]] # 15
+  - [-1, 1, C3k2, [256, False]] # 16 P5_td
+
+  - [16, 1, EUCB, [128]] # 17 up P5_td->P4
+  - [11, 1, Conv, [128, 3, 2]] # 18 P3->P4 down
+  - [[12, 17, 18], 1, WFF, [3]] # 19
+  - [-1, 1, C3k2, [128, False]] # 20 P4_td
+
+  - [20, 1, EUCB, [128]] # 21 up P4_td->P3
+  - [2, 1, Conv, [128, 3, 2]] # 22 P2->P3 down
+  - [[11, 21, 22], 1, WFF, [3]] # 23
+  - [-1, 1, C3k2, [128, False]] # 24 P3_td
+
+  - [24, 1, EUCB, [64]] # 25 up P3_td->P2
+  - [2, 1, Conv, [64, 3, 1]] # 26 P2 lat
+  - [[26, 25], 1, WFF, [2]] # 27
+  - [-1, 1, C3k2, [64, False]] # 28 P2_td
+
+  # ---- bottom-up (advanced) : P2_out,P3_out,P4_out,P5_out ----
+  - [[28, 25], 1, WFF, [2]] # 29
+  - [-1, 1, C3k2, [64, False]] # 30 P2_out (head 160x160)
+
+  - [30, 1, Conv, [128, 3, 2]] # 31 P2_out->P3 down
+  - [28, 1, Conv, [128, 3, 2]] # 32 P2_td->P3 down (skip)
+  - [[24, 31, 32], 1, WFF, [3]] # 33
+  - [-1, 1, C3k2, [128, False]] # 34 P3_out (head 80x80)
+
+  - [34, 1, Conv, [128, 3, 2]] # 35 P3_out->P4 down
+  - [24, 1, Conv, [128, 3, 2]] # 36 P3_td->P4 down (skip)
+  - [[20, 35, 36], 1, WFF, [3]] # 37
+  - [-1, 1, C3k2, [128, False]] # 38 P4_out (head 40x40)
+
+  - [38, 1, Conv, [256, 3, 2]] # 39 P4_out->P5 down
+  - [20, 1, Conv, [256, 3, 2]] # 40 P4_td->P5 down (skip)
+  - [[16, 39, 40], 1, WFF, [3]] # 41
+  - [-1, 1, C3k2, [256, False]] # 42 P5_out (head 20x20)
+
+  - [[30, 34, 38, 42], 1, Detect_ESDCDH, [nc, 128]] # 43 ESDCDH P2-P5
