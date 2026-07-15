@@ -17,13 +17,14 @@ print(f"ultralytics {ultralytics.__version__} at {PKG}")
 
 
 def replace_once(path: Path, old: str, new: str, tag: str):
-    text = path.read_text()
+    # utf-8 eksplisit: default Windows (cp1252) gagal baca sumber ultralytics.
+    text = path.read_text(encoding="utf-8")
     if new in text:
         print(f"  [skip] {tag} already applied")
         return
     if old not in text:
         raise SystemExit(f"  [FAIL] anchor for {tag} not found in {path} (version mismatch?)")
-    path.write_text(text.replace(old, new, 1))
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
     print(f"  [ok]   {tag}")
 
 
