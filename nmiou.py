@@ -46,8 +46,13 @@ def mpdiou(box1, box2, eps=1e-7):
 
 
 def nmiou(box1, box2, alpha=0.8, C=12.8):
-    """NMIoU = alpha * MPDIoU + (1 - alpha) * NWD. alpha=0.8 terbaik menurut Tabel 3 paper."""
-    return alpha * mpdiou(box1, box2) + (1 - alpha) * nwd(box1, box2, C)
+    """NMIoU = alpha * MPDIoU + (1 - alpha) * NWD. alpha=0.8 terbaik menurut Tabel 3 paper.
+
+    Return shape (..., 1) meniru ultralytics bbox_iou. WAJIB: tanpa dim terakhir ini,
+    (1-iou)*weight di BboxLoss broadcast (N,)*(N,1)->(N,N) -> box_loss membengkak ~N kali.
+    """
+    v = alpha * mpdiou(box1, box2) + (1 - alpha) * nwd(box1, box2, C)
+    return v.unsqueeze(-1)
 
 
 if __name__ == "__main__":
