@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Patch an editable Ultralytics install for S-YOLOv11 (PATCH-ULTRALYTICS.md steps 2-4).
+"""Patch an editable Ultralytics install for S-YOLOv11 and GhostNet variants (PATCH-ULTRALYTICS.md).
 
 Idempotent: safe to re-run. Auto-detects the installed ultralytics package.
 Used both on the host (sanity check) and inside the Docker image (training).
@@ -30,30 +30,40 @@ def replace_once(path: Path, old: str, new: str, tag: str):
 
 # --- step 2: copy custom modules ---
 shutil.copy(HERE / "modules_sy.py", PKG / "nn" / "modules_sy.py")
+shutil.copy(HERE / "modules_ghost.py", PKG / "nn" / "modules_ghost.py")
 shutil.copy(HERE / "nmiou.py", PKG / "utils" / "nmiou.py")
-print("  [ok]   copied modules_sy.py, nmiou.py")
+print("  [ok]   copied modules_sy.py, modules_ghost.py, nmiou.py")
 
 # --- step 3: patch nn/tasks.py ---
 tasks = PKG / "nn" / "tasks.py"
 
-# 3a. import
+# 3a. import custom modules
 replace_once(
     tasks,
     "from ultralytics.nn.modules import (",
     "from ultralytics.nn.modules_sy import EUCB, WFF, Detect_ESDCDH\n"
+    "from ultralytics.nn.modules_ghost import C3k2_Ghost, C3k2_GhostV3, GhostConv, GhostBottleneck\n"
     "from ultralytics.nn.modules import (",
-    "tasks: import",
+    "tasks: import custom modules",
 )
 
-# 3b. register EUCB as a channelled module (gets (c1, c2) like Conv)
+# 3b. register EUCB, C3k2_Ghost, C3k2_GhostV3 in channel set
 replace_once(
     tasks,
     "        if m in {\n            Classify,\n            Conv,\n",
-    "        if m in {\n            Classify,\n            Conv,\n            EUCB,\n",
-    "tasks: EUCB in channel set",
+    "        if m in {\n            Classify,\n            Conv,\n            EUCB,\n            C3k2_Ghost,\n            C3k2_GhostV3,\n",
+    "tasks: EUCB, C3k2_Ghost, C3k2_GhostV3 in channel set",
 )
 
-# 3c. WFF branch (multi-input, channels unchanged) — insert before final else
+# 3c. register C3k2_Ghost, C3k2_GhostV3 in C3/C2f depth-gain insertion branch
+replace_once(
+    tasks,
+    "                C2f,\n                C3k2,\n",
+    "                C2f,\n                C3k2,\n                C3k2_Ghost,\n                C3k2_GhostV3,\n",
+    "tasks: C3k2_Ghost, C3k2_GhostV3 in depth insertion set",
+)
+
+# 3d. WFF branch (multi-input, channels unchanged) — insert before final else
 replace_once(
     tasks,
     "        elif m is CBFuse:\n            c2 = ch[f[-1]]\n",
@@ -62,7 +72,7 @@ replace_once(
     "tasks: WFF branch",
 )
 
-# 3d. register Detect_ESDCDH as a detection head
+# 3e. register Detect_ESDCDH as a detection head
 replace_once(
     tasks,
     "        elif m in {Detect, WorldDetect, Segment, Pose, OBB, ImagePoolingAttn, v10Detect}:",
