@@ -95,9 +95,6 @@ class RepDWConv(nn.Module):
         )
         self.bn_skip = nn.BatchNorm2d(c)
 
-        # Deploy conv (used after switch_to_deploy)
-        self.rbr_reparam = nn.Conv2d(c, c, 3, 1, 1, groups=c, bias=True)
-
     def forward(self, x):
         if self.deploy:
             return self.act(self.rbr_reparam(x))
@@ -109,6 +106,9 @@ class RepDWConv(nn.Module):
         if self.deploy:
             return
         w, b = self._get_equivalent_kernel_bias()
+        self.rbr_reparam = nn.Conv2d(
+            self.c, self.c, 3, 1, 1, groups=self.c, bias=True
+        ).to(device=w.device, dtype=w.dtype)
         self.rbr_reparam.weight.data.copy_(w)
         self.rbr_reparam.bias.data.copy_(b)
         self.__delattr__("dw3x3")
@@ -163,6 +163,139 @@ class GhostConvV3(nn.Module):
     def forward(self, x):
         y = self.cv1(x)
         return torch.cat((y, self.cv2(y)), dim=1)
+
+
+class RepConvN(nn.Module):
+    """N-branch Conv-BN block used by the official GhostNetV3 training graph."""
+
+    def __init__(self, c1, c2, k, s=1, p=None, g=1, branches=3, act=True):
+        super().__init__()
+        self.c1, self.c2, self.k, self.s, self.g = c1, c2, k, s, g
+        self.p = k // 2 if p is None else p
+        self.deploy = False
+        self.act = nn.ReLU(inplace=True) if act else nn.Identity()
+        self.branches = nn.ModuleList(
+            nn.Sequential(
+                nn.Conv2d(c1, c2, k, s, self.p, groups=g, bias=False),
+                nn.BatchNorm2d(c2),
+            )
+            for _ in range(branches)
+        )
+        self.scale = (
+            nn.Sequential(
+                nn.Conv2d(c1, c2, 1, s, 0, groups=g, bias=False),
+                nn.BatchNorm2d(c2),
+            )
+            if k > 1
+            else None
+        )
+        self.skip = nn.BatchNorm2d(c1) if c1 == c2 and s == 1 else None
+
+    def forward(self, x):
+        if self.deploy:
+            return self.act(self.reparam(x))
+        y = sum(branch(x) for branch in self.branches)
+        if self.scale is not None:
+            y = y + self.scale(x)
+        if self.skip is not None:
+            y = y + self.skip(x)
+        return self.act(y)
+
+    @staticmethod
+    def _fuse_conv_bn(conv, bn):
+        scale = bn.weight / torch.sqrt(bn.running_var + bn.eps)
+        kernel = conv.weight * scale.reshape(-1, 1, 1, 1)
+        bias = bn.bias - bn.running_mean * scale
+        return kernel, bias
+
+    def _fuse_skip_bn(self):
+        kernel = torch.zeros(
+            (self.c2, self.c1 // self.g, self.k, self.k),
+            device=self.skip.weight.device,
+            dtype=self.skip.weight.dtype,
+        )
+        center = self.k // 2
+        channels_per_group = self.c1 // self.g
+        for out_channel in range(self.c2):
+            kernel[out_channel, out_channel % channels_per_group, center, center] = 1
+        scale = self.skip.weight / torch.sqrt(self.skip.running_var + self.skip.eps)
+        kernel = kernel * scale.reshape(-1, 1, 1, 1)
+        bias = self.skip.bias - self.skip.running_mean * scale
+        return kernel, bias
+
+    def equivalent_kernel_bias(self):
+        kernel = 0
+        bias = 0
+        for branch in self.branches:
+            branch_kernel, branch_bias = self._fuse_conv_bn(branch[0], branch[1])
+            kernel = kernel + branch_kernel
+            bias = bias + branch_bias
+        if self.scale is not None:
+            scale_kernel, scale_bias = self._fuse_conv_bn(self.scale[0], self.scale[1])
+            pad = self.k // 2
+            kernel = kernel + F.pad(scale_kernel, (pad, pad, pad, pad))
+            bias = bias + scale_bias
+        if self.skip is not None:
+            skip_kernel, skip_bias = self._fuse_skip_bn()
+            kernel = kernel + skip_kernel
+            bias = bias + skip_bias
+        return kernel, bias
+
+    def switch_to_deploy(self):
+        if self.deploy:
+            return
+        kernel, bias = self.equivalent_kernel_bias()
+        self.reparam = nn.Conv2d(
+            self.c1, self.c2, self.k, self.s, self.p, groups=self.g, bias=True
+        ).to(device=kernel.device, dtype=kernel.dtype)
+        self.reparam.weight.data.copy_(kernel)
+        self.reparam.bias.data.copy_(bias)
+        del self.branches
+        if self.scale is not None:
+            del self.scale
+        if self.skip is not None:
+            del self.skip
+        self.deploy = True
+
+
+class GhostModuleV3(nn.Module):
+    """Standalone GhostNetV3 module adapted from Huawei's official source.
+
+    Training uses three parallel Conv-BN branches on both the primary and cheap
+    paths, plus eligible scale and identity branches. Deployment fuses each
+    path to one convolution. The DFC gate follows GhostNetV2/V3.
+    """
+
+    def __init__(self, c1, c2, k=1, s=1, ratio=2, dw_size=3, act=True):
+        super().__init__()
+        self.c2 = c2
+        intrinsic = math.ceil(c2 / ratio)
+        cheap = intrinsic * (ratio - 1)
+        self.primary = RepConvN(c1, intrinsic, k, s, branches=3, act=act)
+        self.cheap = RepConvN(
+            intrinsic, cheap, dw_size, 1, g=intrinsic, branches=3, act=act
+        )
+        self.gate = nn.Sequential(
+            nn.Conv2d(c1, c2, 1, s, 0, bias=False),
+            nn.BatchNorm2d(c2),
+            nn.Conv2d(c2, c2, (1, 5), 1, (0, 2), groups=c2, bias=False),
+            nn.BatchNorm2d(c2),
+            nn.Conv2d(c2, c2, (5, 1), 1, (2, 0), groups=c2, bias=False),
+            nn.BatchNorm2d(c2),
+        )
+
+    def forward(self, x):
+        intrinsic = self.primary(x)
+        cheap = self.cheap(intrinsic)
+        y = torch.cat((intrinsic, cheap), dim=1)[:, : self.c2]
+        pooled = F.avg_pool2d(x, kernel_size=2, stride=2)
+        gate = torch.sigmoid(self.gate(pooled))
+        gate = F.interpolate(gate, size=y.shape[-2:], mode="nearest")
+        return y * gate
+
+    def switch_to_deploy(self):
+        self.primary.switch_to_deploy()
+        self.cheap.switch_to_deploy()
 
 
 class GhostBottleneckV3(nn.Module):

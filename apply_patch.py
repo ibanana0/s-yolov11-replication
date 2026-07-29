@@ -42,17 +42,17 @@ replace_once(
     tasks,
     "from ultralytics.nn.modules import (",
     "from ultralytics.nn.modules_sy import EUCB, WFF, Detect_ESDCDH\n"
-    "from ultralytics.nn.modules_ghost import C3k2_Ghost, C3k2_GhostV3, GhostConv, GhostBottleneck\n"
+    "from ultralytics.nn.modules_ghost import C3k2_Ghost, C3k2_GhostV3, GhostModuleV3\n"
     "from ultralytics.nn.modules import (",
     "tasks: import custom modules",
 )
 
-# 3b. register EUCB, C3k2_Ghost, C3k2_GhostV3 in channel set
+# 3b. register custom single-input modules in channel set
 replace_once(
     tasks,
     "        if m in {\n            Classify,\n            Conv,\n",
-    "        if m in {\n            Classify,\n            Conv,\n            EUCB,\n            C3k2_Ghost,\n            C3k2_GhostV3,\n",
-    "tasks: EUCB, C3k2_Ghost, C3k2_GhostV3 in channel set",
+    "        if m in {\n            Classify,\n            Conv,\n            EUCB,\n            C3k2_Ghost,\n            C3k2_GhostV3,\n            GhostModuleV3,\n",
+    "tasks: custom modules in channel set",
 )
 
 # 3c. register C3k2_Ghost, C3k2_GhostV3 in C3/C2f depth-gain insertion branch
