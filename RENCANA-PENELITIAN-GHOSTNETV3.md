@@ -388,7 +388,7 @@ python -u run_ablation_queue.py \
   --seed 0 \
   --batch 8 \
   --device 0 \
-  --project runs/s-yolov11-ablation \
+  --project runs/s-yolov11-main \
   --log-root logs/ablation
 ```
 
